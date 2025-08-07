@@ -115,6 +115,7 @@ public function clear_caches_callback() {
         'clearobjectcache',
         'clearwoocache',
         'clearwprocket',
+        'clearsucuri',
         'clearbrowsercache'
     ));
     ?>
@@ -160,8 +161,21 @@ public function clear_caches_callback() {
         </p>
         <?php endif; ?>
 
+        <?php 
+        $options = get_option('squirrel_options');
+        if (!empty($options['sucuri_api_key'])): 
+            $sucuri_url = 'https://waf.sucuri.net/api?k=' . urlencode($options['sucuri_api_key']) . '&s=c7c8c5bdc4646c6b9b92f2a47953e130&a=clearcache';
+        ?>
+        <p>
+            <a href="<?php echo esc_url($sucuri_url); ?>" 
+               class="button button-secondary"
+               target="_blank">
+                <?php _e('Clear Sucuri Cache', 'squirrel-plugin'); ?>
+            </a>
+        </p>
+        <?php endif; ?>
 
-        
+
         
         <?php $this->maybe_show_cache_clear_messages(); ?>
     </div>
@@ -199,6 +213,12 @@ private function maybe_show_cache_clear_messages() {
     if (isset($_GET['clearwprocket']) && $_GET['clearwprocket']) {
         echo '<div class="notice notice-success inline"><p>';
         _e('WP Rocket cache cleared.', 'squirrel-plugin');
+        echo '</p></div>';
+    }
+    
+    if (isset($_GET['clearsucuri']) && $_GET['clearsucuri']) {
+        echo '<div class="notice notice-success inline"><p>';
+        _e('Sucuri cache cleared.', 'squirrel-plugin');
         echo '</p></div>';
     }
     
@@ -367,7 +387,6 @@ public function handle_cache_clearing() {
       if (isset($input['sucuri_api_key'])) {
           $sanitized['sucuri_api_key'] = sanitize_text_field(trim($input['sucuri_api_key']));
       }
-      
    
     
       
