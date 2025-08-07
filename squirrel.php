@@ -27,18 +27,12 @@ class Squirrel {
      */
     public function init() {
         // Register settings
-        add_action('admin_init', array($this, 'register_settings'));
-        
+        add_action('admin_init', array($this, 'register_settings'));        
         // Add menu item
-        add_action('admin_menu', array($this, 'add_admin_menu'));
-        
+        add_action('admin_menu', array($this, 'add_admin_menu'));        
         // Load admin assets
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));      
-         add_action('admin_init', array($this, 'handle_cache_clearing'));
-
-      
-
-         add_action('admin_notices', array($this, 'admin_notices'));
+        add_action('admin_init', array($this, 'handle_cache_clearing'));
     }
     
     /**
@@ -51,8 +45,7 @@ class Squirrel {
             array(                  
                 'sanitize_callback' => array($this, 'sanitize_settings')
             )
-        );
-        
+        );        
         // Register sections and fields
         $this->setup_settings_sections();
     }
@@ -79,34 +72,26 @@ class Squirrel {
         'squirrel_cache_section'
     );
 
-    // Add Debug Settings section
+ 
+
+    // Add API Settings section
     add_settings_section(
-        'squirrel_debug_section',
-        __('Cache Bust Configuration', 'squirrel-plugin'),
-        array($this, 'debug_section_callback'),
+        'squirrel_api_section',
+        __('Settings', 'squirrel-plugin'),
+        array($this, 'api_section_callback'),
         'squirrel-settings'
     );
 
-   
-
- 
-
-    // Add API Key field
+    // Add Sucuri API Key field
     add_settings_field(
-        'squirrel_api_key',
-        __('API Key', 'squirrel-plugin'),
-        array($this, 'api_key_field_callback'),
+        'sucuri_api_key',
+        __('Sucuri API Key', 'squirrel-plugin'),
+        array($this, 'sucuri_api_key_field_callback'),
         'squirrel-settings',
         'squirrel_api_section'
     );
 
-    // Add Developer Settings section
-    add_settings_section(
-        'squirrel_developer_section',
-        __('Developer Settings', 'squirrel-plugin'),
-        array($this, 'developer_section_callback'),
-        'squirrel-settings'
-    );
+ 
 
 
     
@@ -174,6 +159,9 @@ public function clear_caches_callback() {
             </a>
         </p>
         <?php endif; ?>
+
+
+        
         
         <?php $this->maybe_show_cache_clear_messages(); ?>
     </div>
@@ -222,6 +210,33 @@ private function maybe_show_cache_clear_messages() {
     
     // Additional cache types can be added here following the same pattern
 }
+
+/**
+ * API Section callback
+ */
+public function api_section_callback() {
+    echo '<p>' . __('Configure your API connection settings.', 'squirrel-plugin') . '</p>';
+}
+
+/**
+ * Sucuri API Key field callback
+ */
+public function sucuri_api_key_field_callback() {
+    $options = get_option('squirrel_options');
+    $api_key = isset($options['sucuri_api_key']) ? esc_attr($options['sucuri_api_key']) : '';
+    ?>
+    <input type="text" 
+           id="sucuri_api_key" 
+           name="squirrel_options[sucuri_api_key]" 
+           value="<?php echo $api_key; ?>" 
+           class="regular-text">
+    <p class="description">
+        <?php _e('Enter your Sucuri API key for cache busting of the firewall.', 'squirrel-plugin'); ?>
+    </p>
+    <?php
+}
+
+
 
 
 
@@ -313,7 +328,7 @@ public function handle_cache_clearing() {
             ?>
         </form>
         
-        <?php $this->debug_log_section_callback(); ?>
+       
     </div>
     <?php
 }
@@ -348,44 +363,18 @@ public function handle_cache_clearing() {
     public function sanitize_settings($input) {
       $sanitized = array();
       
-      // Sanitize API key
-      if (isset($input['api_key'])) {
-          $sanitized['api_key'] = sanitize_text_field(trim($input['api_key']));
+      // Sanitize Sucuri API key
+      if (isset($input['sucuri_api_key'])) {
+          $sanitized['sucuri_api_key'] = sanitize_text_field(trim($input['sucuri_api_key']));
       }
       
-      // Sanitize debug log size
-      if (isset($input['debug_log_max_size'])) {
-          $allowed_sizes = array('1kb', '1mb', '1gb');
-          $sanitized['debug_log_max_size'] = in_array($input['debug_log_max_size'], $allowed_sizes) 
-              ? $input['debug_log_max_size'] 
-              : '1mb';
-      }
-      
-      // Sanitize developer email
-      if (isset($input['developer_email'])) {
-          $sanitized['developer_email'] = sanitize_email(trim($input['developer_email']));
-      }
+   
+    
       
       return $sanitized;
   }
 
-    /**
-     * Debug Log Size field callback
-     */
-    public function debug_log_size_callback() {
-        $options = get_option('squirrel_options');
-        $current_size = isset($options['debug_log_max_size']) ? $options['debug_log_max_size'] : '1mb';
-        ?>
-        <select id="debug_log_max_size" name="squirrel_options[debug_log_max_size]" class="regular-text">
-            <option value="1kb" <?php selected($current_size, '1kb'); ?>><?php _e('1 KB', 'squirrel-plugin'); ?></option>
-            <option value="1mb" <?php selected($current_size, '1mb'); ?>><?php _e('1 MB', 'squirrel-plugin'); ?></option>
-            <option value="1gb" <?php selected($current_size, '1gb'); ?>><?php _e('1 GB', 'squirrel-plugin'); ?></option>
-        </select>
-        <p class="description">
-            <?php _e('Maximum allowed size for debug.log file before rotation.', 'squirrel-plugin'); ?>
-        </p>
-        <?php
-    }
+    
     /**
      * Developer Section callback
      */
@@ -396,36 +385,6 @@ public function handle_cache_clearing() {
 
 
 
-/**
- * Show admin notice when log was recently cleared
- */
-public function admin_notices() {
-    $cleanup_info = get_option('squirrel_last_cleanup');
-    if (!$cleanup_info || (time() - strtotime($cleanup_info['time']) > 3600)) {
-        return;
-    }
-    
-    $size = size_format($cleanup_info['size']);
-    ?>
-    <div class="notice notice-warning is-dismissible">
-        <p>
-            <?php printf(
-                __('Squirrel: debug.log was automatically cleared at %1$s. The file had reached %2$s in size.', 'squirrel-plugin'),
-                date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($cleanup_info['time'])),
-                $size
-            ); ?>
-        </p>
-        <details style="margin-top:10px;">
-            <summary><?php _e('Show last 10 lines', 'squirrel-plugin'); ?></summary>
-            <pre style="background:#f6f7f7;padding:10px;overflow:auto;"><?php 
-                echo esc_html(implode("\n", array_slice(explode("\n", $cleanup_info['last_lines']), -10)));
-            ?></pre>
-        </details>
-    </div>
-    <?php
-    // Clear the transient after displaying
-    delete_option('squirrel_last_cleanup');
-}
 
 
 
