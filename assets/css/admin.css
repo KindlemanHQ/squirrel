@@ -1,0 +1,16 @@
+/* Basic styling for the settings page */
+.wrap h1 {
+    margin-bottom: 20px;
+}
+
+.form-table th {
+    width: 200px;
+}
+
+.squirrel-notice {
+    padding: 10px;
+    background: #fff;
+    border-left: 4px solid #46b450;
+    margin: 5px 0 15px;
+}
+
