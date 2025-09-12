@@ -21,3 +21,6 @@ Squirrel is a simple WordPress plugin to help you clear various caches on your s
 3. (Optional) Enter your Sucuri API key to enable Sucuri WAF cache busting.
 
 ![Squirrel Screenshot](assets/images/screenshot.png)
+
+## Credits
+This is buit by the good Kindlefolk.  You can [contact us for help, support, coffee or a whole new site.](mailto:will@kindleman.com.au).
