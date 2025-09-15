@@ -3,7 +3,7 @@
  * Plugin Name: Squirrel
  * Plugin URI: https://kindleman.com.au/squirrel
  * Description: Wordpress Logging and debug.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Kindleman 
  * Author URI: https://kindleman.com.au
  * License: GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define constants with uppercase names
-define('SQUIRREL_VERSION', '1.0.0');
+define('SQUIRREL_VERSION', '1.0.1');
 define('SQUIRREL_DIR', plugin_dir_path(__FILE__));
 define('SQUIRREL_URL', plugin_dir_url(__FILE__));
 
@@ -87,6 +87,15 @@ class Squirrel {
         'sucuri_api_key',
         __('Sucuri API Key', 'squirrel-plugin'),
         array($this, 'sucuri_api_key_field_callback'),
+        'squirrel-settings',
+        'squirrel_api_section'
+    );
+
+    // Add Sucuri Site field
+    add_settings_field(
+        'sucuri_site',
+        __('Sucuri Site key', 'squirrel-plugin'),
+        array($this, 'sucuri_site_field_callback'),
         'squirrel-settings',
         'squirrel_api_section'
     );
@@ -164,7 +173,7 @@ public function clear_caches_callback() {
         <?php 
         $options = get_option('squirrel_options');
         if (!empty($options['sucuri_api_key'])): 
-            $sucuri_url = 'https://waf.sucuri.net/api?k=' . urlencode($options['sucuri_api_key']) . '&s=c7c8c5bdc4646c6b9b92f2a47953e130&a=clearcache';
+            $sucuri_url = 'https://waf.sucuri.net/api?k=' . urlencode($options['sucuri_api_key']) . '&s=' . urlencode($options['sucuri_site']) . '&a=clearcache';
         ?>
         <p>
             <a href="<?php echo esc_url($sucuri_url); ?>" 
@@ -256,6 +265,24 @@ public function sucuri_api_key_field_callback() {
     <?php
 }
 
+/**
+ * Sucuri Site field callback
+ */
+public function sucuri_site_field_callback() {
+    $options = get_option('squirrel_options');
+    $site = isset($options['sucuri_site']) ? esc_attr($options['sucuri_site']) : '';
+    ?>
+    <input type="text"
+           id="sucuri_site"
+           name="squirrel_options[sucuri_site]"
+           value="<?php echo $site; ?>"
+           class="regular-text"
+           placeholder="eg 123456789abcdefghijklmnopqrstuvw">
+    <p class="description">
+        <?php _e('Enter the Sucuri site key.  Should be a 32 character long string', 'squirrel-plugin'); ?>
+    </p>
+    <?php
+}
 
 
 
@@ -386,6 +413,11 @@ public function handle_cache_clearing() {
       // Sanitize Sucuri API key
       if (isset($input['sucuri_api_key'])) {
           $sanitized['sucuri_api_key'] = sanitize_text_field(trim($input['sucuri_api_key']));
+      }
+      
+      // Sanitize Sucuri site (domain only, strip protocol and trailing slash)
+      if (isset($input['sucuri_site'])) {          
+          $sanitized['sucuri_site'] = sanitize_text_field(trim($input['sucuri_site']));
       }
    
     
