@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Squirrel
  * Plugin URI: https://kindleman.com.au/squirrel
- * Description: Wordpress Logging and debug.
+ * Description: Wordpress Cache Buster.
  * Version: 1.0.1
  * Author: Kindleman 
  * Author URI: https://kindleman.com.au
