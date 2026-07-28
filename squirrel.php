@@ -21,6 +21,17 @@ define('SQUIRREL_VERSION', '1.0.1');
 define('SQUIRREL_DIR', plugin_dir_path(__FILE__));
 define('SQUIRREL_URL', plugin_dir_url(__FILE__));
 
+// Sucuri auto cache-purge settings
+define('SQUIRREL_LOG_OPTION', 'squirrel_activity_log');
+define('SQUIRREL_LAST_PURGE_TRANSIENT', 'squirrel_last_purge');
+define('SQUIRREL_PURGE_RATE_LIMIT', 5 * MINUTE_IN_SECONDS);
+define('SQUIRREL_WATCHDOG_HOOK', 'squirrel_watchdog_check');
+define('SQUIRREL_WATCHDOG_SCHEDULE', 'squirrel_fifteen_minutes');
+// Fallback only, used when no per-site value has been saved in Settings > Squirrel.
+// butterfly.org.au's compiled style.css is ~186KB uncompressed; default sits
+// well below that (with headroom for edits) but far above a truncated response.
+define('SQUIRREL_CSS_MIN_BYTES_DEFAULT', 100000);
+
 class Squirrel {
     /**
      * Initialize the plugin
@@ -31,8 +42,14 @@ class Squirrel {
         // Add menu item
         add_action('admin_menu', array($this, 'add_admin_menu'));        
         // Load admin assets
-        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));      
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
         add_action('admin_init', array($this, 'handle_cache_clearing'));
+
+        // Sucuri auto cache-purge triggers
+        add_action('upgrader_process_complete', array($this, 'on_upgrader_process_complete'), 10, 2);
+        add_action('breeze_after_clear_cache', array($this, 'on_breeze_cache_cleared'));
+        add_filter('cron_schedules', array($this, 'add_cron_schedules'));
+        add_action(SQUIRREL_WATCHDOG_HOOK, array($this, 'watchdog_check'));
     }
     
     /**
@@ -100,10 +117,25 @@ class Squirrel {
         'squirrel_api_section'
     );
 
- 
+    // Add Watchdog section
+    add_settings_section(
+        'squirrel_watchdog_section',
+        __('Sucuri Auto Cache-Purge', 'squirrel-plugin'),
+        array($this, 'watchdog_section_callback'),
+        'squirrel-settings'
+    );
+
+    // Add CSS minimum size field
+    add_settings_field(
+        'sucuri_css_min_bytes',
+        __('Minimum Stylesheet Size (bytes)', 'squirrel-plugin'),
+        array($this, 'sucuri_css_min_bytes_field_callback'),
+        'squirrel-settings',
+        'squirrel_watchdog_section'
+    );
 
 
-    
+
 }
 
 /**
@@ -284,7 +316,34 @@ public function sucuri_site_field_callback() {
     <?php
 }
 
+/**
+ * Watchdog Section callback
+ */
+public function watchdog_section_callback() {
+    echo '<p>' . __('Sucuri cache is purged automatically after WordPress updates and Breeze cache clears, and checked every 15 minutes by a self-healing watchdog. Configure the watchdog below.', 'squirrel-plugin') . '</p>';
+}
 
+/**
+ * Sucuri CSS minimum size field callback
+ */
+public function sucuri_css_min_bytes_field_callback() {
+    $options = get_option('squirrel_options');
+    $min_bytes = isset($options['sucuri_css_min_bytes']) && $options['sucuri_css_min_bytes'] !== ''
+        ? absint($options['sucuri_css_min_bytes'])
+        : SQUIRREL_CSS_MIN_BYTES_DEFAULT;
+    ?>
+    <input type="number"
+           id="sucuri_css_min_bytes"
+           name="squirrel_options[sucuri_css_min_bytes]"
+           value="<?php echo esc_attr($min_bytes); ?>"
+           class="small-text"
+           min="0"
+           step="1">
+    <p class="description">
+        <?php _e('The watchdog fetches the theme stylesheet directly; a 200 response smaller than this (bytes) is treated as broken and triggers a Sucuri cache purge. Set this a little below your theme\'s real compiled stylesheet size.', 'squirrel-plugin'); ?>
+    </p>
+    <?php
+}
 
 
 /**
@@ -374,10 +433,40 @@ public function handle_cache_clearing() {
             submit_button('Save Settings');
             ?>
         </form>
-        
-       
+
+        <?php $this->render_activity_log(); ?>
+
     </div>
     <?php
+}
+
+/**
+ * Render a read-only view of the Squirrel activity log (newest first).
+ */
+private function render_activity_log() {
+    $log = array_reverse(get_option(SQUIRREL_LOG_OPTION, array()));
+    ?>
+    <h2><?php _e('Activity Log', 'squirrel-plugin'); ?></h2>
+    <?php if (empty($log)): ?>
+        <p><?php _e('No activity logged yet.', 'squirrel-plugin'); ?></p>
+    <?php else: ?>
+        <table class="widefat striped">
+            <thead>
+                <tr>
+                    <th><?php _e('Time', 'squirrel-plugin'); ?></th>
+                    <th><?php _e('Message', 'squirrel-plugin'); ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($log as $entry): ?>
+                <tr>
+                    <td><?php echo esc_html($entry['time']); ?></td>
+                    <td><?php echo esc_html($entry['message']); ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif;
 }
     
     /**
@@ -416,12 +505,17 @@ public function handle_cache_clearing() {
       }
       
       // Sanitize Sucuri site (domain only, strip protocol and trailing slash)
-      if (isset($input['sucuri_site'])) {          
+      if (isset($input['sucuri_site'])) {
           $sanitized['sucuri_site'] = sanitize_text_field(trim($input['sucuri_site']));
       }
-   
-    
-      
+
+      // Sanitize watchdog CSS minimum size (bytes)
+      if (isset($input['sucuri_css_min_bytes']) && $input['sucuri_css_min_bytes'] !== '') {
+          $sanitized['sucuri_css_min_bytes'] = absint($input['sucuri_css_min_bytes']);
+      }
+
+      $this->sync_watchdog_schedule($sanitized);
+
       return $sanitized;
   }
 
@@ -433,7 +527,178 @@ public function handle_cache_clearing() {
         echo '<p>' . __('Configure developer notifications and alerts.', 'squirrel-plugin') . '</p>';
     }
 
+    /**
+     * Append a message to Squirrel's activity log (capped, non-autoloaded option)
+     * and mirror it to the PHP error log.
+     */
+    public function log($message) {
+        $log = get_option(SQUIRREL_LOG_OPTION, array());
+        $log[] = array(
+            'time'    => current_time('mysql'),
+            'message' => $message,
+        );
 
+        if (count($log) > 100) {
+            $log = array_slice($log, -100);
+        }
+
+        update_option(SQUIRREL_LOG_OPTION, $log, false);
+
+        error_log('[Squirrel] ' . $message);
+    }
+
+    /**
+     * Fire a Sucuri edge cache purge, rate-limited so multiple triggers
+     * firing close together only result in one request.
+     */
+    public function purge_sucuri_cache($reason = '') {
+        $options = get_option('squirrel_options');
+        $key = isset($options['sucuri_api_key']) ? $options['sucuri_api_key'] : '';
+        $site = isset($options['sucuri_site']) ? $options['sucuri_site'] : '';
+
+        if (empty($key) || empty($site)) {
+            $this->log(sprintf('Sucuri purge skipped (%s): API key/site not configured.', $reason));
+            return false;
+        }
+
+        if (get_transient(SQUIRREL_LAST_PURGE_TRANSIENT)) {
+            $this->log(sprintf('Sucuri purge skipped (%s): rate limited.', $reason));
+            return false;
+        }
+
+        set_transient(SQUIRREL_LAST_PURGE_TRANSIENT, time(), SQUIRREL_PURGE_RATE_LIMIT);
+
+        $url = 'https://waf.sucuri.net/api?k=' . urlencode($key) . '&s=' . urlencode($site) . '&a=clearcache';
+
+        $response = wp_remote_get($url, array(
+            'timeout'  => 10,
+            'blocking' => true,
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log(sprintf('Sucuri purge failed (%s): %s', $reason, $response->get_error_message()));
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        $this->log(sprintf('Sucuri purge triggered (%s): HTTP %s', $reason, $code));
+
+        return $code === 200;
+    }
+
+    /**
+     * Purge after any plugin/theme/core update completes.
+     */
+    public function on_upgrader_process_complete($upgrader, $hook_extra) {
+        $this->purge_sucuri_cache('wp_update');
+    }
+
+    /**
+     * Purge after Breeze clears its own local page/asset cache.
+     */
+    public function on_breeze_cache_cleared() {
+        $this->purge_sucuri_cache('breeze_cache_clear');
+    }
+
+    /**
+     * Register a 15-minute cron schedule for the watchdog.
+     */
+    public function add_cron_schedules($schedules) {
+        if (!isset($schedules[SQUIRREL_WATCHDOG_SCHEDULE])) {
+            $schedules[SQUIRREL_WATCHDOG_SCHEDULE] = array(
+                'interval' => 15 * MINUTE_IN_SECONDS,
+                'display'  => __('Every 15 Minutes', 'squirrel-plugin'),
+            );
+        }
+        return $schedules;
+    }
+
+    /**
+     * Anonymously check the homepage and the theme stylesheet for signs of a
+     * broken cached render, and purge Sucuri if either check fails.
+     */
+    public function watchdog_check() {
+        $options = get_option('squirrel_options');
+
+        $home_response = wp_remote_get(home_url('/'), array(
+            'timeout' => 15,
+            'cookies' => array(),
+        ));
+
+        if (is_wp_error($home_response)) {
+            $this->log('Watchdog: failed to fetch homepage - ' . $home_response->get_error_message());
+            $this->purge_sucuri_cache('watchdog_homepage_unreachable');
+            return;
+        }
+
+        $body = wp_remote_retrieve_body($home_response);
+        $stylesheet_url = get_stylesheet_uri();
+        $stylesheet_filename = basename(wp_parse_url($stylesheet_url, PHP_URL_PATH));
+
+        if (empty($body) || strpos($body, $stylesheet_filename) === false) {
+            $this->log(sprintf('Watchdog: homepage missing stylesheet reference (%s).', $stylesheet_filename));
+            $this->purge_sucuri_cache('watchdog_missing_stylesheet_link');
+            return;
+        }
+
+        $css_response = wp_remote_get($stylesheet_url, array(
+            'timeout' => 15,
+            'cookies' => array(),
+        ));
+
+        if (is_wp_error($css_response)) {
+            $this->log('Watchdog: failed to fetch stylesheet - ' . $css_response->get_error_message());
+            $this->purge_sucuri_cache('watchdog_stylesheet_unreachable');
+            return;
+        }
+
+        $min_bytes = isset($options['sucuri_css_min_bytes']) && $options['sucuri_css_min_bytes'] !== ''
+            ? absint($options['sucuri_css_min_bytes'])
+            : SQUIRREL_CSS_MIN_BYTES_DEFAULT;
+
+        $css_code = wp_remote_retrieve_response_code($css_response);
+        $css_size = strlen(wp_remote_retrieve_body($css_response));
+
+        if ((int) $css_code !== 200 || $css_size < $min_bytes) {
+            $this->log(sprintf('Watchdog: stylesheet check failed (HTTP %s, %d bytes, min %d).', $css_code, $css_size, $min_bytes));
+            $this->purge_sucuri_cache('watchdog_broken_stylesheet');
+            return;
+        }
+
+        $this->log('Watchdog: homepage and stylesheet check passed.');
+    }
+
+    /**
+     * Plugin activation: schedule the watchdog cron event.
+     */
+    public function activate() {
+        $this->sync_watchdog_schedule(get_option('squirrel_options'));
+    }
+
+    /**
+     * Schedule or unschedule the watchdog cron event to match whether Sucuri
+     * credentials are configured, so sites without Sucuri never run it at all.
+     */
+    private function sync_watchdog_schedule($options) {
+        $configured = !empty($options['sucuri_api_key']) && !empty($options['sucuri_site']);
+        $scheduled = wp_next_scheduled(SQUIRREL_WATCHDOG_HOOK);
+
+        if ($configured && !$scheduled) {
+            wp_schedule_event(time(), SQUIRREL_WATCHDOG_SCHEDULE, SQUIRREL_WATCHDOG_HOOK);
+        } elseif (!$configured && $scheduled) {
+            wp_unschedule_event($scheduled, SQUIRREL_WATCHDOG_HOOK);
+        }
+    }
+
+    /**
+     * Plugin deactivation: clear the watchdog cron event.
+     */
+    public function deactivate() {
+        $timestamp = wp_next_scheduled(SQUIRREL_WATCHDOG_HOOK);
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, SQUIRREL_WATCHDOG_HOOK);
+        }
+    }
 
 
 
@@ -446,4 +711,6 @@ public function handle_cache_clearing() {
 if (class_exists('Squirrel')) {
     $squirrel = new Squirrel();
     $squirrel->init();
+    register_activation_hook(__FILE__, array($squirrel, 'activate'));
+    register_deactivation_hook(__FILE__, array($squirrel, 'deactivate'));
 }
