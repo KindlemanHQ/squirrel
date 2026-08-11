@@ -28,8 +28,8 @@ define('SQUIRREL_PURGE_RATE_LIMIT', 5 * MINUTE_IN_SECONDS);
 define('SQUIRREL_WATCHDOG_HOOK', 'squirrel_watchdog_check');
 define('SQUIRREL_WATCHDOG_SCHEDULE', 'squirrel_fifteen_minutes');
 // Fallback only, used when no per-site value has been saved in Settings > Squirrel.
-// butterfly.org.au's compiled style.css is ~186KB uncompressed; default sits
-// well below that (with headroom for edits) but far above a truncated response.
+// butterfly.org.au's compiled dist/css/styles.css is ~186KB uncompressed; default
+// sits well below that (with headroom for edits) but far above a truncated response.
 define('SQUIRREL_CSS_MIN_BYTES_DEFAULT', 100000);
 
 class Squirrel {
@@ -50,6 +50,19 @@ class Squirrel {
         add_action('breeze_after_clear_cache', array($this, 'on_breeze_cache_cleared'));
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
         add_action(SQUIRREL_WATCHDOG_HOOK, array($this, 'watchdog_check'));
+
+        // Self-heal: re-check the schedule on every load, so the watchdog
+        // recovers on its own if the cron event is ever lost (e.g. a code
+        // deploy adds/changes this feature without the settings form being
+        // re-saved or the plugin being reactivated).
+        add_action('init', array($this, 'maybe_sync_watchdog_schedule'));
+    }
+
+    /**
+     * Public wrapper so 'init' can trigger the schedule check.
+     */
+    public function maybe_sync_watchdog_schedule() {
+        $this->sync_watchdog_schedule(get_option('squirrel_options'));
     }
     
     /**
@@ -123,6 +136,15 @@ class Squirrel {
         __('Sucuri Auto Cache-Purge', 'squirrel-plugin'),
         array($this, 'watchdog_section_callback'),
         'squirrel-settings'
+    );
+
+    // Add watched stylesheet path field
+    add_settings_field(
+        'watched_css_path',
+        __('Watched Stylesheet Path', 'squirrel-plugin'),
+        array($this, 'watched_css_path_field_callback'),
+        'squirrel-settings',
+        'squirrel_watchdog_section'
     );
 
     // Add CSS minimum size field
@@ -324,6 +346,25 @@ public function watchdog_section_callback() {
 }
 
 /**
+ * Watched stylesheet path field callback
+ */
+public function watched_css_path_field_callback() {
+    $options = get_option('squirrel_options');
+    $path = isset($options['watched_css_path']) ? esc_attr($options['watched_css_path']) : '';
+    ?>
+    <input type="text"
+           id="watched_css_path"
+           name="squirrel_options[watched_css_path]"
+           value="<?php echo $path; ?>"
+           class="regular-text"
+           placeholder="dist/css/styles.css">
+    <p class="description">
+        <?php _e('Path to the compiled stylesheet the watchdog should check, relative to the active theme\'s directory (e.g. <code>dist/css/styles.css</code>). This should match the file actually enqueued on the front end, not the theme\'s root style.css header file. Leave blank to fall back to the theme\'s root style.css.', 'squirrel-plugin'); ?>
+    </p>
+    <?php
+}
+
+/**
  * Sucuri CSS minimum size field callback
  */
 public function sucuri_css_min_bytes_field_callback() {
@@ -514,6 +555,11 @@ private function render_activity_log() {
           $sanitized['sucuri_css_min_bytes'] = absint($input['sucuri_css_min_bytes']);
       }
 
+      // Sanitize watched stylesheet path (relative to theme directory)
+      if (isset($input['watched_css_path'])) {
+          $sanitized['watched_css_path'] = ltrim(sanitize_text_field(trim($input['watched_css_path'])), '/');
+      }
+
       $this->sync_watchdog_schedule($sanitized);
 
       return $sanitized;
@@ -632,7 +678,13 @@ private function render_activity_log() {
         }
 
         $body = wp_remote_retrieve_body($home_response);
-        $stylesheet_url = get_stylesheet_uri();
+
+        $watched_path = isset($options['watched_css_path']) ? trim($options['watched_css_path']) : '';
+        if ($watched_path !== '') {
+            $stylesheet_url = get_template_directory_uri() . '/' . $watched_path;
+        } else {
+            $stylesheet_url = get_stylesheet_uri();
+        }
         $stylesheet_filename = basename(wp_parse_url($stylesheet_url, PHP_URL_PATH));
 
         if (empty($body) || strpos($body, $stylesheet_filename) === false) {
